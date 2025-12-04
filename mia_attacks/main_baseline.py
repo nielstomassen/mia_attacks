@@ -9,8 +9,8 @@ from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import roc_curve, auc
 import matplotlib.pyplot as plt
 
-from baseline.shadow import *
-from baseline.model import *  # only needed if you still want CNN etc., but not strictly required here
+from .baseline.shadow import *
+from .baseline.model import *  # only needed if you still want CNN etc., but not strictly required here
 
 
 def _select_attack_impl(choice: str):

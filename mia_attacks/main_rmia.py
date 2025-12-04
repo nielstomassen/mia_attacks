@@ -12,9 +12,9 @@ from torchvision import datasets, transforms
 import math
 import os
 import matplotlib.pyplot as plt 
-from rmia.shadow import *
-from rmia.rmia import *
-from rmia.model import *
+from .rmia.shadow import *
+from .rmia.rmia import *
+from .rmia.model import *
 
 
 #-----------------------------------------------------------------------------------

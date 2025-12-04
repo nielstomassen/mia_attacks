@@ -12,9 +12,9 @@ import matplotlib.pyplot as plt
 import os
 from torch.utils.data import DataLoader, SubsetRandomSampler, TensorDataset, ConcatDataset
 from torchvision import datasets, transforms
-from lira.shadow import *
-from lira.lira import *
-from lira.model import *
+from .lira.shadow import *
+from .lira.lira import *
+from .lira.model import *
 
 
 #-----------------------------------------------------------------------------------

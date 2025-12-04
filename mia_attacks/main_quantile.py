@@ -21,8 +21,8 @@ from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 import warnings
 warnings.filterwarnings("ignore")
-from quantile.model import *
-from quantile.quantile_attack import *
+from .quantile.model import *
+from .quantile.quantile_attack import *
 
 
 #-----------------------------------------------------------------------------------

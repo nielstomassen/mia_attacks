@@ -12,9 +12,9 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import roc_curve, auc, accuracy_score
 from torchvision import datasets, transforms
-from shadow_attack.shadow_attack import *
-from shadow_attack.shadow import *
-from shadow_attack.model import *
+from .shadow_attack.shadow_attack import *
+from .shadow_attack.shadow import *
+from .shadow_attack.model import *
 
 # -----------------------------------------------------------------------------------
 input_shape = (3, 32, 32)
