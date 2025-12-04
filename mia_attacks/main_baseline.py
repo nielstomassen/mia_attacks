@@ -16,17 +16,17 @@ from .baseline.model import *  # only needed if you still want CNN etc., but not
 def _select_attack_impl(choice: str):
     """Dynamically import the proper baseline attack implementation."""
     if choice == 'loss':
-        from baseline.baseline_loss import MIA
+        from .baseline.baseline_loss import MIA
         attack_epochs = 30
         attack_lr = 1e-2
         attack_hidden_size = 8
     elif choice == 'conf':
-        from baseline.baseline_conf import MIA
+        from .baseline.baseline_conf import MIA
         attack_epochs = 50
         attack_lr = 1e-2
         attack_hidden_size = 8
     elif choice == 'prob':
-        from baseline.baseline_prob import MIA
+        from .baseline.baseline_prob import MIA
         attack_epochs = 30
         attack_lr = 1e-3
         attack_hidden_size = 128
