@@ -1,215 +1,246 @@
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import torchvision
-from torchvision import transforms
-import numpy as np
-import torch.nn.functional as F
-from scipy.stats import norm
-from sklearn.metrics import roc_curve, auc, accuracy_score
-import math
-import matplotlib.pyplot as plt 
+# mia_attacks.py
+
 import os
-from torch.utils.data import DataLoader, SubsetRandomSampler, TensorDataset, ConcatDataset
-from torchvision import datasets, transforms
+import math
+import numpy as np
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, TensorDataset
+from sklearn.metrics import roc_curve, auc
+import matplotlib.pyplot as plt
+
 from baseline.shadow import *
-from baseline.model import *
-import argparse
-parser = argparse.ArgumentParser(description='MIA')
-parser.add_argument('--choice', type=str, default='loss', help='modality of attack model')
-args = parser.parse_args()
-if args.choice=='loss':
-    from baseline.baseline_loss import *
-elif args.choice=='conf':
-    from baseline.baseline_conf import *
-elif args.choice=='prob':
-    from baseline.baseline_prob import *
-else:
-    raise ValueError("Invalid choice")
+from baseline.model import *  # only needed if you still want CNN etc., but not strictly required here
 
 
+def _select_attack_impl(choice: str):
+    """Dynamically import the proper baseline attack implementation."""
+    if choice == 'loss':
+        from baseline.baseline_loss import MIA
+        attack_epochs = 30
+        attack_lr = 1e-2
+        attack_hidden_size = 8
+    elif choice == 'conf':
+        from baseline.baseline_conf import MIA
+        attack_epochs = 50
+        attack_lr = 1e-2
+        attack_hidden_size = 8
+    elif choice == 'prob':
+        from baseline.baseline_prob import MIA
+        attack_epochs = 30
+        attack_lr = 1e-3
+        attack_hidden_size = 128
+    else:
+        raise ValueError(f"Invalid MIA choice: {choice}")
 
-if not os.path.exists('results'):
-    os.makedirs('results')
-#-----------------------------------------------------------------------------------
-input_shape = (3, 32, 32)
-channel = 3
-num_classes=10
-hidden_size = 512
-output_size = 10
-epochs = 50
-lr = 1e-3
-meausurement_number=10  # number of target samples to be measured from each training and non-training data
-if args.choice=='conf':
-    attack_epochs=50
-    attack_lr=1e-2
-    attack_hidden_size=8
-elif args.choice=='loss':
-    attack_epochs=30
-    attack_lr=1e-2
-    attack_hidden_size=8
-else:
-    attack_epochs=30
-    attack_lr=1e-3
-    attack_hidden_size=128
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-#-----------------------------------------------------------------------------------
+    return MIA, attack_epochs, attack_lr, attack_hidden_size
 
 
-# Load CIFAR-10 dataset
-transform = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-    transforms.Lambda(lambda x: x.view(3, 32, 32))
-])
+def _collect_all_data_from_loader(loader):
+    """Turn a DataLoader into two tensors (images, labels)."""
+    images_list = []
+    labels_list = []
 
-train_dataset = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
-test_dataset = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
+    for images, labels in loader:
+        images_list.append(images)
+        labels_list.append(labels)
 
-
-batch_size = 128 * 4
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
-test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    images = torch.cat(images_list, dim=0)
+    labels = torch.cat(labels_list, dim=0)
+    return images, labels
 
 
+@torch.no_grad()
+def calculate_accuracy(model, loader, device: torch.device) -> float:
+    """Simple accuracy helper."""
+    model.eval()
+    correct = 0
+    total = 0
+    for images, labels in loader:
+        images = images.to(device)
+        labels = labels.to(device)
+        outputs = model(images)
+        _, predicted = torch.max(outputs, 1)
+        total += labels.size(0)
+        correct += (predicted == labels).sum().item()
+    return 100.0 * correct / total
 
 
+def run_mia_attack(
+    target_model,
+    train_loader,
+    test_loader,
+    device: str | torch.device,
+    choice: str = "loss",
+    measurement_number: int = 10,
+    results_dir: str = "results",
+    save_artifacts: bool = True,
+):
+    """
+    Run a membership inference attack against `target_model`.
 
-target_model=CNN(channel, num_classes).to(device)
-if not os.path.exists('target_model.pth'):
-    print(f"Training Target Model on CIFAR-10 on Epochs: {epochs}")
-    train_model_with_loader(target_model, train_loader, epochs, lr,device)
-    torch.save(target_model.state_dict(), 'target_model.pth')
+    Parameters
+    ----------
+    target_model : torch.nn.Module
+        The trained model you want to attack.
+    train_loader : DataLoader
+        DataLoader for (training) members.
+    test_loader : DataLoader
+        DataLoader for non-members.
+    device : str or torch.device
+        Device on which the model lives ("cuda" or "cpu").
+    choice : {"loss", "conf", "prob"}
+        Which baseline attack variant to use.
+    measurement_number : int
+        Number of target samples from each of train and test to measure.
+    results_dir : str
+        Where to save ROC plots and hyperparameters (if save_artifacts is True).
+    save_artifacts : bool
+        If True, saves ROC figure and hyperparameters text file.
 
-else:
-    print("Loading trained Target Model")
-    target_model.load_state_dict(torch.load('target_model.pth'))
+    Returns
+    -------
+    result : dict
+        {
+            "auc": float,
+            "tpr": np.ndarray,
+            "fpr": np.ndarray,
+            "scores": np.ndarray,
+            "measurement_ref": np.ndarray,
+            "train_accuracy": float,
+            "test_accuracy": float,
+        }
+    """
+    if isinstance(device, str):
+        device = torch.device(device)
+
     target_model.to(device)
 
-# Calculate training and test accuracy
-train_accuracy = calculate_accuracy(target_model, train_loader, device)
-test_accuracy = calculate_accuracy(target_model, test_loader, device)
-print(f"Training Accuracy: {train_accuracy:.2f}%")
-print(f"Test Accuracy: {test_accuracy:.2f}%")
+    # 1) Choose attack implementation + hyperparams
+    MIA, attack_epochs, attack_lr, attack_hidden_size = _select_attack_impl(choice)
 
+    # 2) Collect full train/test tensors from loaders
+    train_images, train_labels = _collect_all_data_from_loader(train_loader)
+    test_images, test_labels = _collect_all_data_from_loader(test_loader)
 
+    # 3) Accuracy sanity check (optional)
+    train_acc = calculate_accuracy(target_model, train_loader, device)
+    test_acc = calculate_accuracy(target_model, test_loader, device)
+    print(f"[MIA] Target training accuracy: {train_acc:.2f}%")
+    print(f"[MIA] Target test accuracy:     {test_acc:.2f}%")
 
+    # 4) Build measurement sets 
+    #    number of samples attacker already knows, keep 0 for now
+    num_samples_train = int(0.0 * len(train_images))  # 0 
+    num_samples_test = int(0.0 * len(test_images)) # 0
 
+    # Training side (save to disk for reproducability)
+    if not os.path.exists('original_indices'):
+        original_indices = torch.randperm(len(train_images))
+        torch.save(original_indices, 'original_indices')
+    else:
+        original_indices = torch.load('original_indices')
 
-num_samples_train = int(0.0*len(train_loader.dataset))
-num_samples_test=int(0.0*len(test_loader.dataset))
-print("----------------------------------")
-print(f"Attackers knowledge:")
-print(f"Training Dataset Info: = {100}%")
-print(f"Testing Dataset Info: = {100}%")
-print("----------------------------------")
+    indices_train = original_indices[:num_samples_train] # Empty because num_samples_train = 0
+    # Since num_samples_train = 0 is effectively take first n samples of training data.
+    anti_indices_train = original_indices[num_samples_train:num_samples_train + measurement_number]
 
+    attacker_train_images = train_images[indices_train] # Empty because 0
+    attacker_train_labels = train_labels[indices_train] # Empty because 0
+    
+    # Samples where MIA attack will be performed on.
+    measurement_train_images = train_images[anti_indices_train]
+    measurement_train_labels = train_labels[anti_indices_train]
 
-train_images=[]
-train_labels=[]
-for images, labels in train_loader:
-    train_images.append(images)
-    train_labels.append(labels)
-train_images=torch.cat(train_images)
-train_labels=torch.cat(train_labels)
+    # Test side
+    if not os.path.exists('original_indices_test'):
+        original_indices_test = torch.randperm(len(test_images))
+        torch.save(original_indices_test, 'original_indices_test')
+    else:
+        original_indices_test = torch.load('original_indices_test')
 
-if not os.path.exists('original_indices'):
-    original_indices=torch.randperm(len(train_images))
-    torch.save(original_indices,'original_indices')
-else:
-    original_indices=torch.load('original_indices')
+    indices_test = original_indices_test[:num_samples_test]
+    anti_indices_test = original_indices_test[num_samples_test:num_samples_test + measurement_number]
 
-indices = original_indices[:num_samples_train]
-anti_indices = original_indices[num_samples_train:num_samples_train+meausurement_number]
-attacker_train_images = train_images[indices]
-attacker_train_labels = train_labels[indices]
+    attacker_test_images = test_images[indices_test]
+    attacker_test_labels = test_labels[indices_test]
+    measurement_test_images = test_images[anti_indices_test]
+    measurement_test_labels = test_labels[anti_indices_test]
 
-measurement_train_images = train_images[anti_indices]
-measurement_train_labels = train_labels[anti_indices]
+    # Combine
+    # Both empty and not used but would be used to train a shadow model
+    shadow_images = torch.cat([attacker_train_images, attacker_test_images])
+    shadow_labels = torch.cat([attacker_train_labels, attacker_test_labels])
 
+    # Combine train and test to get a mix of members and non members
+    measurement_images = torch.cat([measurement_train_images, measurement_test_images])
+    measurement_labels = torch.cat([measurement_train_labels, measurement_test_labels])
+    
+    # Array to track membership (0 = member, 1 = non-member)
+    measurement_ref = np.array([0] * len(measurement_train_images) +
+                               [1] * len(measurement_test_images))
 
-test_images=[]
-test_labels=[]
-for images, labels in test_loader:
-    test_images.append(images)
-    test_labels.append(labels)
-test_images=torch.cat(test_images)
-test_labels=torch.cat(test_labels)
+    print(f"[MIA] Measurement sample size: {len(measurement_images)}")
 
-if not os.path.exists('original_indices_test'):
-    original_indices_test=torch.randperm(len(test_images))
-    torch.save(original_indices_test,'original_indices_test')
-else:
-    original_indices_test=torch.load('original_indices_test')
+    # 5) Run the actual attack
+    scores = MIA(
+        target_model,
+        train_loader,
+        test_loader,
+        measurement_images,
+        measurement_labels,
+        attack_hidden_size,
+        attack_epochs,
+        attack_lr,
+        device,
+    )
 
+    # 6) ROC & AUC
+    fpr, tpr, _ = roc_curve(measurement_ref, scores)
+    auc_value = auc(fpr, tpr)
+    print("[MIA] -------------------------")
+    print(f"[MIA] AUC: {auc_value}")
+    print("[MIA] -------------------------")
 
-indices = original_indices_test[:num_samples_test]
-anti_indices = original_indices_test[num_samples_test:num_samples_test+meausurement_number]
+    # 7) Optionally save artifacts
+    if save_artifacts:
+        os.makedirs(results_dir, exist_ok=True)
 
+        # ROC plot
+        plt.figure()
+        plt.plot(fpr, tpr, lw=2, label=f'ROC curve (area = {auc_value:0.2f})')
+        plt.plot([0, 1], [0, 1], lw=2, linestyle='--')
+        plt.xlim([0.0, 1.0])
+        plt.ylim([0.0, 1.05])
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.title(f'Receiver Operating Characteristic - Attack: {choice}')
+        plt.legend(loc="lower right")
+        roc_path = os.path.join(results_dir, f"ROC_Baseline_Attack_{choice}.png")
+        plt.savefig(roc_path)
+        plt.close()
 
-attacker_test_images = test_images[indices]
-attacker_test_labels = test_labels[indices]
+        # Hyperparams log
+        hyperparams = {
+            "measurement_number": measurement_number,
+            "attack_epochs": attack_epochs,
+            "attack_lr": attack_lr,
+            "attack_hidden_size": attack_hidden_size,
+            "device": str(device),
+            "train_accuracy": train_acc,
+            "test_accuracy": test_acc,
+        }
+        txt_path = os.path.join(results_dir, f"Baseline_Attack_{choice}.txt")
+        with open(txt_path, "w") as f:
+            for k, v in hyperparams.items():
+                f.write(f"{k}: {v}\n")
 
-measurement_test_images = test_images[anti_indices]
-measurement_test_labels = test_labels[anti_indices]
-
-shadow_images=torch.cat([attacker_train_images,attacker_test_images])
-shadow_labels=torch.cat([attacker_train_labels,attacker_test_labels])
-
-
-measurement_images=torch.cat([measurement_train_images,measurement_test_images])
-measurement_ref=np.array([0]*len(measurement_train_images)+[1]*len(measurement_test_images))
-measurement_labels=torch.cat([measurement_train_labels,measurement_test_labels])
-
-print("Measurement Sample Size:",len(measurement_images))
-
-
-scores= MIA(target_model, 
-            train_loader, 
-            test_loader, 
-            measurement_images, 
-            measurement_labels, 
-            attack_hidden_size, 
-            attack_epochs,
-            attack_lr,
-            device)
-
-tpr, fpr, roc = roc_curve(measurement_ref, scores)
-print("--------------")
-print(f'AUC: {auc(fpr, tpr)}  |')
-print("-------------")
-plt.plot(fpr, tpr, color='darkorange', lw=2, label='ROC curve (area = %0.2f)' % auc(fpr, tpr))
-plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
-plt.xlim([0.0, 1.0])
-plt.ylim([0.0, 1.05])
-plt.xlabel('False Positive Rate')
-plt.ylabel('True Positive Rate')
-plt.title('Receiver Operating Characteristic')
-plt.legend(loc="lower right")
-plt.savefig(f'results/ROC_Baseline Attack_{args.choice}.png')
-
-
-filename = f"results/Baseline Attack_{args.choice}.txt"
-
-hyperparams = {
-    "input_shape": input_shape,
-    "channel": channel,
-    "num_classes": num_classes,
-    "hidden_size": hidden_size,
-    "output_size": output_size,
-    "epochs": epochs,
-    "lr": lr,
-    "measurement_number": meausurement_number,
-    "attack_epochs": attack_epochs,
-    "attack_lr": attack_lr,
-    "attack_hidden_size": attack_hidden_size,
-    "device": str(device)
-}
-
-
-os.makedirs("results", exist_ok=True)
-
-
-with open(filename, 'w') as f:
-    for param_name, param_value in hyperparams.items():
-        f.write(f"{param_name}: {param_value}\n")
+    return {
+        "auc": auc_value,
+        "tpr": tpr,
+        "fpr": fpr,
+        "scores": scores,
+        "measurement_ref": measurement_ref,
+        "train_accuracy": train_acc,
+        "test_accuracy": test_acc,
+    }
