@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mia-attacks"
+version = "0.1.0"
+description = "Membership inference attack baselines from antibloch/mia_attacks"
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [
+  { name = "Original authors + fork by Niels Tomassen" }
+]
+
+# Optional, you can add dependencies if you want pip to pull them automatically:
+dependencies = [
+  "torch",
+  "torchvision",
+  "numpy",
+  "matplotlib",
+  "scipy",
+  "scikit-learn"
+]
+
+[tool.setuptools]
+# We tell setuptools to auto-discover packages in the current directory
+packages = ["baseline", "lira", "rmia"]
