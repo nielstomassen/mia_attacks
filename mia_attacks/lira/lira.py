@@ -101,7 +101,7 @@ def stable_phi(output, target, num_classes=10, device=torch.device('cuda')):
 
 
 # Function to estimate loss distributions using shadow models
-def estimate_loss_distributions(target_data, target_label, shadow_imgs,shadow_labs, num_shadow_models=2, epochs=100, lr=0.01, device='cuda'):
+def estimate_loss_distributions(target_data, target_label, shadow_imgs,shadow_labs, num_shadow_models=2, epochs=100, lr=0.01, device='cuda', shadow_model_fn=None):
     in_losses = [[] for _ in range(target_data.size(0))]
     out_losses = [[] for _ in range(target_data.size(0))]
 
@@ -116,7 +116,9 @@ def estimate_loss_distributions(target_data, target_label, shadow_imgs,shadow_la
             shadow_labs2 = shadow_labs[indices[len(indices)//2:]]
 
             # Include the target example in the dataset
-            model_in = ShadowModel().to(device)
+            if shadow_model_fn is None:
+                shadow_model_fn = lambda: ShadowModel(channel=3, num_classes=10)
+            model_in = shadow_model_fn().to(device)
             train_data_in = torch.cat((shadow_imgs1, target_data[omeaga:omeaga+1]), 0)
             train_labels_in = torch.cat((shadow_labs1, target_label[omeaga:omeaga+1]), 0)
             model_in = train_model_with_raw_tensors(model_in, train_data_in, train_labels_in, epochs, lr)
@@ -127,7 +129,7 @@ def estimate_loss_distributions(target_data, target_label, shadow_imgs,shadow_la
                 in_losses[omeaga].append(loss_in)
 
             # Exclude the target example from the dataset
-            model_out = ShadowModel().to(device)
+            model_out = shadow_model_fn().to(device)
             train_data_out=shadow_imgs2
             train_labels_out = shadow_labs2
             model_out = train_model_with_raw_tensors(model_out, train_data_out, train_labels_out, epochs, lr)

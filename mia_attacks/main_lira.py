@@ -34,6 +34,7 @@ def run_lira_attack(
     epochs_shadow_model: int = 20,
     results_dir: str = "results_lira",
     save_artifacts: bool = True,
+    shadow_model_fn=None, 
 ):
     """
     Run a LIRA membership inference attack on a given `target_model`.
@@ -185,6 +186,7 @@ def run_lira_attack(
         num_shadow_models=num_shadow_models,
         epochs=epochs_shadow_model,
         lr=lr_shadow_model,
+        shadow_model_fn=shadow_model_fn
     )
 
     # ---- 5) Attack zone: run LIRA scoring on the target model ----
