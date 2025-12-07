@@ -6,6 +6,7 @@ import torch
 from sklearn.metrics import roc_curve, auc
 import matplotlib.pyplot as plt
 
+
 # from .baseline.shadow import *
 # from .baseline.model import *  # only needed if you still want CNN etc., but not strictly required here
 
@@ -13,24 +14,24 @@ import matplotlib.pyplot as plt
 def _select_attack_impl(choice: str):
     """Dynamically import the proper baseline attack implementation."""
     if choice == 'loss':
-        from .baseline.baseline_loss import MIA
+        from .baseline.baseline_loss import MIA, calculate_accuracy
         attack_epochs = 30
         attack_lr = 1e-2
         attack_hidden_size = 8
     elif choice == 'conf':
-        from .baseline.baseline_conf import MIA
+        from .baseline.baseline_conf import MIA, calculate_accuracy
         attack_epochs = 50
         attack_lr = 1e-2
         attack_hidden_size = 8
     elif choice == 'prob':
-        from .baseline.baseline_prob import MIA
+        from .baseline.baseline_prob import MIA, calculate_accuracy
         attack_epochs = 30
         attack_lr = 1e-3
         attack_hidden_size = 128
     else:
         raise ValueError(f"Invalid MIA choice: {choice}")
 
-    return MIA, attack_epochs, attack_lr, attack_hidden_size
+    return MIA, calculate_accuracy, attack_epochs, attack_lr, attack_hidden_size
 
 
 def _collect_all_data_from_loader(loader):
@@ -45,22 +46,6 @@ def _collect_all_data_from_loader(loader):
     images = torch.cat(images_list, dim=0)
     labels = torch.cat(labels_list, dim=0)
     return images, labels
-
-
-@torch.no_grad()
-def calculate_accuracy(model, loader, device: torch.device) -> float:
-    """Simple accuracy helper."""
-    model.eval()
-    correct = 0
-    total = 0
-    for images, labels in loader:
-        images = images.to(device)
-        labels = labels.to(device)
-        outputs = model(images)
-        _, predicted = torch.max(outputs, 1)
-        total += labels.size(0)
-        correct += (predicted == labels).sum().item()
-    return 100.0 * correct / total
 
 
 def run_mia_attack(
@@ -114,7 +99,7 @@ def run_mia_attack(
     target_model.to(device)
 
     # 1) Choose attack implementation + hyperparams
-    MIA, attack_epochs, attack_lr, attack_hidden_size = _select_attack_impl(choice)
+    MIA, calculate_accuracy, attack_epochs, attack_lr, attack_hidden_size = _select_attack_impl(choice)
 
     # 2) Collect full train/test tensors from loaders
     train_images, train_labels = _collect_all_data_from_loader(train_loader)
@@ -201,6 +186,12 @@ def run_mia_attack(
         attack_lr,
         device,
     )
+    scores_members = scores[measurement_ref == 0]      # by your current convention
+    scores_nonmembers = scores[measurement_ref == 1]
+
+    print("mean score for members:    ", scores_members.mean())
+    print("mean score for nonmembers: ", scores_nonmembers.mean())
+
 
     # 6) ROC & AUC
     fpr, tpr, _ = roc_curve(measurement_ref, scores)

@@ -1,211 +1,251 @@
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import torchvision
-from torchvision import transforms
-import numpy as np
-import torch.nn.functional as F
-from scipy.stats import norm
-from sklearn.metrics import roc_curve, auc, accuracy_score
-import math
-import matplotlib.pyplot as plt 
+# src/mia_lira.py
+
 import os
-from torch.utils.data import DataLoader, SubsetRandomSampler, TensorDataset, ConcatDataset
-from torchvision import datasets, transforms
+import math
+import numpy as np
+import torch
+from torch.utils.data import DataLoader
+from sklearn.metrics import roc_curve, auc
+import matplotlib.pyplot as plt
+
 from .lira.shadow import *
 from .lira.lira import *
-from .lira.model import *
+from .lira.model import *  # only needed if you still want CNN here for shadow models etc.
 
 
-#-----------------------------------------------------------------------------------
-input_shape = (3, 32, 32)
-channel = 3
-num_classes=10
-hidden_size = 512
-output_size = 10
-epochs = 50
-lr = 1e-3
-perc=0.0   # amount of actual training data available to the attacker
-perc_test=0.20    # amount of testing data available to the attacker ( similar distribution to training data)
-meausurement_number=10   # number of target samples to be measured from each training and non-training data
-num_shadow_models=50
-lr_shadow_model=1e-3
-epochs_shadow_model=20
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-#-----------------------------------------------------------------------------------
+def _collect_all_data(loader: DataLoader):
+    """Turn a DataLoader into (images, labels) tensors."""
+    imgs, labs = [], []
+    for x, y in loader:
+        imgs.append(x)
+        labs.append(y)
+    return torch.cat(imgs, dim=0), torch.cat(labs, dim=0)
 
+def run_lira_attack(
+    target_model,
+    train_loader: DataLoader,
+    test_loader: DataLoader,
+    device: str | torch.device,
+    perc: float = 0.0,
+    perc_test: float = 0.20,
+    measurement_number: int = 10,
+    num_shadow_models: int = 50,
+    lr_shadow_model: float = 1e-3,
+    epochs_shadow_model: int = 20,
+    results_dir: str = "results_lira",
+    save_artifacts: bool = True,
+):
+    """
+    Run a LIRA membership inference attack on a given `target_model`.
 
-if not os.path.exists('results'):
-    os.makedirs('results')
+    Parameters
+    ----------
+    target_model : nn.Module
+        The trained model you want to attack.
+    train_loader : DataLoader
+        Loader for the (global or victim) training data.
+    test_loader : DataLoader
+        Loader for the held-out test data (non-members).
+    device : str or torch.device
+        "cuda" or "cpu".
+    perc : float
+        Fraction of the training dataset that the attacker knows (shadow training side).
+    perc_test : float
+        Fraction of the test dataset that the attacker knows as "shadow non-members".
+    measurement_number : int
+        Number of samples from train and test used for measurement each.
+    num_shadow_models : int
+        Number of shadow models used by LIRA.
+    lr_shadow_model : float
+        Learning rate for shadow model training.
+    epochs_shadow_model : int
+        Number of epochs for each shadow model.
+    results_dir : str
+        Directory to save ROC plots and hyperparameter logs (if save_artifacts=True).
+    save_artifacts : bool
+        If True, save ROC figure and a small txt log of hyperparameters.
 
-# Load CIFAR-10 dataset
-transform = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-    transforms.Lambda(lambda x: x.view(3, 32, 32))
-])
+    Returns
+    -------
+    result : dict
+        {
+            "auc": float,
+            "tpr": np.ndarray,
+            "fpr": np.ndarray,
+            "scores": np.ndarray,
+            "measurement_ref": np.ndarray,
+            "train_accuracy": float,
+            "test_accuracy": float,
+        }
+    """
 
-train_dataset = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
-test_dataset = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
+    if isinstance(device, str):
+        device = torch.device(device)
 
-
-batch_size = 128 * 2
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
-test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-
-
-
-
-
-target_model=CNN(channel, num_classes).to(device)
-if not os.path.exists('target_model.pth'):
-    print(f"Training Target Model on CIFAR-10 on Epochs: {epochs}")
-    train_model_with_loader(target_model, train_loader, epochs, lr,device)
-    torch.save(target_model.state_dict(), 'target_model.pth')
-
-else:
-    print("Loading trained Target Model")
-    target_model.load_state_dict(torch.load('target_model.pth'))
     target_model.to(device)
 
-# Calculate training and test accuracy
-train_accuracy = calculate_accuracy(target_model, train_loader, device)
-test_accuracy = calculate_accuracy(target_model, test_loader, device)
-print(f"Training Accuracy: {train_accuracy:.2f}%")
-print(f"Test Accuracy: {test_accuracy:.2f}%")
+    # ---- 1) Accuracy sanity check on the target model ----
+    train_acc = calculate_accuracy(target_model, train_loader, device)
+    test_acc = calculate_accuracy(target_model, test_loader, device)
+    print(f"[LIRA] Target training accuracy: {train_acc:.2f}%")
+    print(f"[LIRA] Target test accuracy:     {test_acc:.2f}%")
 
+    # ---- 2) Collect all train/test data from loaders ----
+    train_images, train_labels = _collect_all_data(train_loader)
+    test_images, test_labels = _collect_all_data(test_loader)
 
+    n_train = len(train_images)
+    n_test = len(test_images)
 
+    # Num samples attacker has access to
+    num_samples_train = int(perc * n_train)
+    num_samples_test = int(perc_test * n_test)
 
+    print("----------------------------------")
+    print("[LIRA] Attacker's knowledge:")
+    print(
+        f"[LIRA] Training Dataset Info: {num_samples_train}/{n_train} = "
+        f"{(num_samples_train / max(1, n_train)) * 100:.2f}%"
+    )
+    print(
+        f"[LIRA] Testing Dataset Info:  {num_samples_test}/{n_test} = "
+        f"{(num_samples_test / max(1, n_test)) * 100:.2f}%"
+    )
+    print("----------------------------------")
 
-num_samples_train = int(perc*len(train_loader.dataset))
-num_samples_test=int(perc_test*len(test_loader.dataset))
-print("----------------------------------")
-print(f"Attackers knowledge:")
-print(f"Training Dataset Info: {num_samples_train}/{len(train_loader.dataset)} = {num_samples_train/len(train_loader.dataset)*100}%")
-print(f"Testing Dataset Info: {num_samples_test}/{len(test_loader.dataset)} = {num_samples_test/len(test_loader.dataset)*100}%")
-print("----------------------------------")
+    # ---- 3) Build attacker / measurement splits (reproducible via saved indices) ----
+    # Training side
+    idx_path = "original_indices_lira_train"
 
+    if not os.path.exists(idx_path):
+        # First-time run → create new permutation
+        original_indices = torch.randperm(n_train)
+        torch.save(original_indices, idx_path)
+    else:
+        # Load existing permutation
+        original_indices = torch.load(idx_path)
 
-train_images=[]
-train_labels=[]
-for images, labels in train_loader:
-    train_images.append(images)
-    train_labels.append(labels)
-train_images=torch.cat(train_images)
-train_labels=torch.cat(train_labels)
+        # If dataset size changed OR indices are out of range → regenerate
+        if len(original_indices) != n_train or original_indices.max().item() >= n_train:
+            original_indices = torch.randperm(n_train)
+            torch.save(original_indices, idx_path)
 
-if not os.path.exists('original_indices'):
-    original_indices=torch.randperm(len(train_images))
-    torch.save(original_indices,'original_indices')
-else:
-    original_indices=torch.load('original_indices')
+    # samples the attacker knows of training data
+    attacker_train_indices = original_indices[:num_samples_train]
+    # Samples used for measuring attack success
+    meas_train_indices = original_indices[num_samples_train : num_samples_train + measurement_number]
 
-indices = original_indices[:num_samples_train]
-anti_indices = original_indices[num_samples_train:num_samples_train+meausurement_number]
-attacker_train_images = train_images[indices]
-attacker_train_labels = train_labels[indices]
+    attacker_train_images = train_images[attacker_train_indices]
+    attacker_train_labels = train_labels[attacker_train_indices]
+    measurement_train_images = train_images[meas_train_indices]
+    measurement_train_labels = train_labels[meas_train_indices]
 
-measurement_train_images = train_images[anti_indices]
-measurement_train_labels = train_labels[anti_indices]
+    # Test side
+    idx_path_test = "original_indices_lira_test"
 
+    if not os.path.exists(idx_path_test):
+        original_indices_test = torch.randperm(n_test)
+        torch.save(original_indices_test, idx_path_test)
+    else:
+        original_indices_test = torch.load(idx_path_test)
 
-test_images=[]
-test_labels=[]
-for images, labels in test_loader:
-    test_images.append(images)
-    test_labels.append(labels)
-test_images=torch.cat(test_images)
-test_labels=torch.cat(test_labels)
+        if len(original_indices_test) != n_test or original_indices_test.max().item() >= n_test:
+            original_indices_test = torch.randperm(n_test)
+            torch.save(original_indices_test, idx_path_test)
 
-if not os.path.exists('original_indices_test'):
-    original_indices_test=torch.randperm(len(test_images))
-    torch.save(original_indices_test,'original_indices_test')
-else:
-    original_indices_test=torch.load('original_indices_test')
+    # samples attacker knows not part of data
+    attacker_test_indices = original_indices_test[:num_samples_test]
+    # Samples used for measuring attack success
+    meas_test_indices = original_indices_test[num_samples_test : num_samples_test + measurement_number]
 
+    attacker_test_images = test_images[attacker_test_indices]
+    attacker_test_labels = test_labels[attacker_test_indices]
+    measurement_test_images = test_images[meas_test_indices]
+    measurement_test_labels = test_labels[meas_test_indices]
 
-indices = original_indices_test[:num_samples_test]
-anti_indices = original_indices_test[num_samples_test:num_samples_test+meausurement_number]
+    # Shadow training data: attacker-known train + attacker-known test
+    shadow_images = torch.cat([attacker_train_images, attacker_test_images], dim=0)
+    shadow_labels = torch.cat([attacker_train_labels, attacker_test_labels], dim=0)
 
+    # Measurement set: used to evaluate attack
+    measurement_images = torch.cat([measurement_train_images, measurement_test_images], dim=0)
+    measurement_labels = torch.cat([measurement_train_labels, measurement_test_labels], dim=0)
+    measurement_ref = np.array(
+        [0] * len(measurement_train_images) + [1] * len(measurement_test_images)
+    )  # 0 = member, 1 = non-member
 
-attacker_test_images = test_images[indices]
-attacker_test_labels = test_labels[indices]
+    print(f"[LIRA] Measurement sample size: {len(measurement_images)}")
 
-measurement_test_images = test_images[anti_indices]
-measurement_test_labels = test_labels[anti_indices]
+    # ---- 4) Shadow zone: estimate in/out loss distributions via shadow models ----
+    in_mean, in_std, out_mean, out_std = estimate_loss_distributions(
+        measurement_images,
+        measurement_labels,
+        shadow_images,
+        shadow_labels,
+        num_shadow_models=num_shadow_models,
+        epochs=epochs_shadow_model,
+        lr=lr_shadow_model,
+    )
 
-shadow_images=torch.cat([attacker_train_images,attacker_test_images])
-shadow_labels=torch.cat([attacker_train_labels,attacker_test_labels])
+    # ---- 5) Attack zone: run LIRA scoring on the target model ----
+    scores = run_over_MIA(
+        target_model,
+        measurement_images,
+        measurement_labels,
+        in_mean,
+        in_std,
+        out_mean,
+        out_std,
+    )
 
+    # ---- 6) Compute ROC / AUC ----
+    fpr, tpr, _ = roc_curve(measurement_ref, scores)
+    auc_value = auc(fpr, tpr)
+    print("[LIRA] --------------")
+    print(f"[LIRA] AUC: {auc_value}  |")
+    print("[LIRA] --------------")
 
-measurement_images=torch.cat([measurement_train_images,measurement_test_images])
-measurement_ref=np.array([0]*len(measurement_train_images)+[1]*len(measurement_test_images))
-measurement_labels=torch.cat([measurement_train_labels,measurement_test_labels])
+    # ---- 7) Optional: save artifacts ----
+    if save_artifacts:
+        os.makedirs(results_dir, exist_ok=True)
 
-print("Measurement Sample Size:",len(measurement_images))
+        # ROC plot
+        plt.figure()
+        plt.plot(fpr, tpr, lw=2, label=f"ROC curve (area = {auc_value:0.2f})")
+        plt.plot([0, 1], [0, 1], lw=2, linestyle="--")
+        plt.xlim([0.0, 1.0])
+        plt.ylim([0.0, 1.05])
+        plt.xlabel("False Positive Rate")
+        plt.ylabel("True Positive Rate")
+        plt.title("Receiver Operating Characteristic - LIRA")
+        plt.legend(loc="lower right")
+        roc_path = os.path.join(results_dir, "ROC_LIRA_Attack.png")
+        plt.savefig(roc_path)
+        plt.close()
 
+        # Hyperparameters log
+        hyperparams = {
+            "perc": perc,
+            "perc_test": perc_test,
+            "measurement_number": measurement_number,
+            "num_shadow_models": num_shadow_models,
+            "lr_shadow_model": lr_shadow_model,
+            "epochs_shadow_model": epochs_shadow_model,
+            "train_accuracy": train_acc,
+            "test_accuracy": test_acc,
+            "device": str(device),
+        }
+        txt_path = os.path.join(results_dir, "LIRA_hyperparams.txt")
+        with open(txt_path, "w") as f:
+            for k, v in hyperparams.items():
+                f.write(f"{k}: {v}\n")
 
-
-# --------LIRA-----------------------------------------------------------------
-# shadow zone
-in_mean, in_std, out_mean, out_std = estimate_loss_distributions(measurement_images, 
-                                                                 measurement_labels, 
-                                                                 shadow_images, 
-                                                                 shadow_labels,
-                                                                 num_shadow_models=num_shadow_models, 
-                                                                 epochs=epochs_shadow_model, 
-                                                                 lr=lr_shadow_model)
-# attack zone
-scores = run_over_MIA(target_model, 
-                          measurement_images, 
-                          measurement_labels, 
-                          in_mean, 
-                          in_std, 
-                          out_mean, 
-                          out_std)
-
-#-----------------------------------------------------------------------------------
-
-tpr, fpr, roc = roc_curve(measurement_ref, scores)
-print("--------------")
-print(f'AUC: {auc(fpr, tpr)}  |')
-print("-------------")
-plt.plot(fpr, tpr, color='darkorange', lw=2, label='ROC curve (area = %0.2f)' % auc(fpr, tpr))
-plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
-plt.xlim([0.0, 1.0])
-plt.ylim([0.0, 1.05])
-plt.xlabel('False Positive Rate')
-plt.ylabel('True Positive Rate')
-plt.title('Receiver Operating Characteristic')
-plt.legend(loc="lower right")
-plt.savefig(f'results/ROC_LIRA Attack.png')
-
-
-
-
-filename = "results/LIRA.txt"
-
-hyperparams = {
-    "input_shape": input_shape,
-    "channel": channel,
-    "num_classes": num_classes,
-    "hidden_size": hidden_size,
-    "output_size": output_size,
-    "epochs": epochs,
-    "lr": lr,
-    "perc": perc,
-    "perc_test": perc_test,
-    "measurement_number": meausurement_number,
-    "num_shadow_models": num_shadow_models,
-    "lr_shadow_model": lr_shadow_model,
-    "epochs_shadow_model": epochs_shadow_model,
-    "device": str(device)
-}
-
-
-os.makedirs("results", exist_ok=True)
-
-with open(filename, 'w') as f:
-    for param_name, param_value in hyperparams.items():
-        f.write(f"{param_name}: {param_value}\n")
+    return {
+        "auc": auc_value,
+        "tpr": tpr,
+        "fpr": fpr,
+        "scores": scores,
+        "measurement_ref": measurement_ref,
+        "train_accuracy": train_acc,
+        "test_accuracy": test_acc,
+    }
