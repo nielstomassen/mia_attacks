@@ -117,7 +117,7 @@ def run_mia_attack(
     num_samples_test = int(0.0 * len(test_images)) # 0
 
     # Training side (save to disk for reproducibility, but regenerate if size changed)
-    idx_path_train = "original_indices"
+    idx_path_train = "results_mia/indices/original_indices"
 
     if not os.path.exists(idx_path_train):
         original_indices = torch.randperm(len(train_images))
@@ -140,7 +140,7 @@ def run_mia_attack(
     measurement_train_images = train_images[anti_indices_train]
     measurement_train_labels = train_labels[anti_indices_train]
 
-    idx_path_test = "original_indices_test"
+    idx_path_test = "results_mia/indices/original_indices_test"
 
     if not os.path.exists(idx_path_test):
         original_indices_test = torch.randperm(len(test_images))

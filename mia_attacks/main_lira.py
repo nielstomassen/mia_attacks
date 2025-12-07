@@ -116,7 +116,7 @@ def run_lira_attack(
 
     # ---- 3) Build attacker / measurement splits (reproducible via saved indices) ----
     # Training side
-    idx_path = "original_indices_lira_train"
+    idx_path = "results_mia/indices/original_indices_lira_train"
 
     if not os.path.exists(idx_path):
         # First-time run → create new permutation
@@ -142,7 +142,7 @@ def run_lira_attack(
     measurement_train_labels = train_labels[meas_train_indices]
 
     # Test side
-    idx_path_test = "original_indices_lira_test"
+    idx_path_test = "results_mia/indices/original_indices_lira_test"
 
     if not os.path.exists(idx_path_test):
         original_indices_test = torch.randperm(n_test)
