@@ -118,6 +118,8 @@ def run_mia_attack(
 
     # Training side (save to disk for reproducibility, but regenerate if size changed)
     idx_path_train = "results_mia/indices/original_indices"
+    # Ensure parent directory exists
+    os.makedirs(os.path.dirname(idx_path_train), exist_ok=True)
 
     if not os.path.exists(idx_path_train):
         original_indices = torch.randperm(len(train_images))

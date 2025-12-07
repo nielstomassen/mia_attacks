@@ -116,20 +116,22 @@ def run_lira_attack(
 
     # ---- 3) Build attacker / measurement splits (reproducible via saved indices) ----
     # Training side
-    idx_path = "results_mia/indices/original_indices_lira_train"
+    idx_path_train = "results_mia/indices/original_indices_lira_train"
+    # Ensure parent directory exists
+    os.makedirs(os.path.dirname(idx_path_train), exist_ok=True)
 
-    if not os.path.exists(idx_path):
+    if not os.path.exists(idx_path_train):
         # First-time run → create new permutation
         original_indices = torch.randperm(n_train)
-        torch.save(original_indices, idx_path)
+        torch.save(original_indices, idx_path_train)
     else:
         # Load existing permutation
-        original_indices = torch.load(idx_path)
+        original_indices = torch.load(idx_path_train)
 
         # If dataset size changed OR indices are out of range → regenerate
         if len(original_indices) != n_train or original_indices.max().item() >= n_train:
             original_indices = torch.randperm(n_train)
-            torch.save(original_indices, idx_path)
+            torch.save(original_indices, idx_path_train)
 
     # samples the attacker knows of training data
     attacker_train_indices = original_indices[:num_samples_train]
