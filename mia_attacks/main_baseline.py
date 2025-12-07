@@ -1,16 +1,13 @@
 # mia_attacks.py
 
 import os
-import math
 import numpy as np
 import torch
-import torch.nn.functional as F
-from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import roc_curve, auc
 import matplotlib.pyplot as plt
 
-from .baseline.shadow import *
-from .baseline.model import *  # only needed if you still want CNN etc., but not strictly required here
+# from .baseline.shadow import *
+# from .baseline.model import *  # only needed if you still want CNN etc., but not strictly required here
 
 
 def _select_attack_impl(choice: str):
@@ -134,12 +131,18 @@ def run_mia_attack(
     num_samples_train = int(0.0 * len(train_images))  # 0 
     num_samples_test = int(0.0 * len(test_images)) # 0
 
-    # Training side (save to disk for reproducability)
-    if not os.path.exists('original_indices'):
+    # Training side (save to disk for reproducibility, but regenerate if size changed)
+    idx_path_train = "original_indices"
+
+    if not os.path.exists(idx_path_train):
         original_indices = torch.randperm(len(train_images))
-        torch.save(original_indices, 'original_indices')
+        torch.save(original_indices, idx_path_train)
     else:
-        original_indices = torch.load('original_indices')
+        original_indices = torch.load(idx_path_train)
+        # If dataset size changed or indices are invalid, regenerate
+        if len(original_indices) != len(train_images) or original_indices.max().item() >= len(train_images):
+            original_indices = torch.randperm(len(train_images))
+            torch.save(original_indices, idx_path_train)
 
     indices_train = original_indices[:num_samples_train] # Empty because num_samples_train = 0
     # Since num_samples_train = 0 is effectively take first n samples of training data.
@@ -152,12 +155,16 @@ def run_mia_attack(
     measurement_train_images = train_images[anti_indices_train]
     measurement_train_labels = train_labels[anti_indices_train]
 
-    # Test side
-    if not os.path.exists('original_indices_test'):
+    idx_path_test = "original_indices_test"
+
+    if not os.path.exists(idx_path_test):
         original_indices_test = torch.randperm(len(test_images))
-        torch.save(original_indices_test, 'original_indices_test')
+        torch.save(original_indices_test, idx_path_test)
     else:
-        original_indices_test = torch.load('original_indices_test')
+        original_indices_test = torch.load(idx_path_test)
+        if len(original_indices_test) != len(test_images) or original_indices_test.max().item() >= len(test_images):
+            original_indices_test = torch.randperm(len(test_images))
+            torch.save(original_indices_test, idx_path_test)
 
     indices_test = original_indices_test[:num_samples_test]
     anti_indices_test = original_indices_test[num_samples_test:num_samples_test + measurement_number]
