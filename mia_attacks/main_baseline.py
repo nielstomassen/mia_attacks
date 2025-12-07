@@ -194,7 +194,7 @@ def run_mia_attack(
 
 
     # 6) ROC & AUC
-    fpr, tpr, _ = roc_curve(measurement_ref, scores)
+    fpr, tpr, _ = roc_curve(measurement_ref, scores, pos_label=0)
     auc_value = auc(fpr, tpr)
     print("[MIA] -------------------------")
     print(f"[MIA] AUC: {auc_value}")
