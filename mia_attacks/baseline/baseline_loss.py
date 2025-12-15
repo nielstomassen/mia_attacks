@@ -66,9 +66,9 @@ def get_losses(model, dataloader, device):
     model.eval()
     with torch.no_grad():
         for images, labels in dataloader:
-            images = images.to(device)
-            outputs = model.feature(images)
-            los=nn.CrossEntropyLoss(reduction='none')(outputs, labels.to(device))
+            images, labels = images.to(device), labels.to(device)
+            logits = model(images)
+            los=nn.CrossEntropyLoss(reduction='none')(logits, labels.to(device))
             losses.append(los.cpu())
     return torch.cat(losses).unsqueeze(1)
 
