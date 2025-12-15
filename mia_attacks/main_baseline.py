@@ -170,9 +170,9 @@ def run_mia_attack(
     measurement_images = torch.cat([measurement_train_images, measurement_test_images])
     measurement_labels = torch.cat([measurement_train_labels, measurement_test_labels])
     
-    # Array to track membership (0 = member, 1 = non-member)
-    measurement_ref = np.array([0] * len(measurement_train_images) +
-                               [1] * len(measurement_test_images))
+    # Array to track membership (1 = member, 0 = non-member)
+    measurement_ref = np.array([1] * len(measurement_train_images) +
+                               [0] * len(measurement_test_images))
 
     print(f"[MIA] Measurement sample size: {len(measurement_images)}")
 
@@ -196,7 +196,7 @@ def run_mia_attack(
 
 
     # 6) ROC & AUC
-    fpr, tpr, _ = roc_curve(measurement_ref, scores, pos_label=0)
+    fpr, tpr, _ = roc_curve(measurement_ref, scores, pos_label=1)
     auc_value = auc(fpr, tpr)
     print("[MIA] -------------------------")
     print(f"[MIA] AUC: {auc_value}")
