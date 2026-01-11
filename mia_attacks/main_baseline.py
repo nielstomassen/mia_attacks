@@ -188,8 +188,8 @@ def run_mia_attack(
         attack_lr,
         device,
     )
-    scores_members = scores[measurement_ref == 0]      # by your current convention
-    scores_nonmembers = scores[measurement_ref == 1]
+    scores_members = scores[measurement_ref == 1]      
+    scores_nonmembers = scores[measurement_ref == 0]
 
     print("mean score for members:    ", scores_members.mean())
     print("mean score for nonmembers: ", scores_nonmembers.mean())
